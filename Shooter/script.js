@@ -6,6 +6,45 @@ const wavesE1 = document.getElementById("wave");
 
 const KEYS = {};
 
+const NORMAL_COOLDOWN = 0.22;
+const SPECIAL_COOLDOWN = 2.0;
+
+// Carregamento dos sprites na pasta "Mídias"
+function loadSprite(path) {
+    const img = new Image();
+    img.src = path;
+    return img;
+}
+
+const SPRITES = {
+    player: loadSprite("Mídias/nave.png"),
+    basic: loadSprite("Mídias/inimigo_basico.png"),
+    medium: loadSprite("Mídias/inimigo_medio.png"),
+    hard: loadSprite("Mídias/inimigo_dificil.png"),
+    boss: loadSprite("Mídias/chefao.png")
+};
+
+// Desenha o sprite centralizado sobre a hitbox sem esticar a imagem
+function drawSpriteCentered(img, x, y, w, h, flash = false) {
+    if (!img || !img.complete || img.naturalWidth === 0) {
+        return false; // Retorna false para desenhar o bloquinho de reserva
+    }
+
+    const scale = Math.max(w / img.naturalWidth, h / img.naturalHeight);
+    const drawW = img.naturalWidth * scale;
+    const drawH = img.naturalHeight * scale;
+    const drawX = x + (w - drawW) / 2;
+    const drawY = y + (h - drawH) / 2;
+
+    ctx.save();
+    if (flash) {
+        ctx.filter = "brightness(3)";
+    }
+    ctx.drawImage(img, drawX, drawY, drawW, drawH);
+    ctx.restore();
+    return true;
+}
+
 window.addEventListener("keydown", (e) => {
     const key = e.key.toLowerCase();
     KEYS[key] = true;
@@ -44,7 +83,8 @@ class Player {
         this.y = canvas.height - 56;
         this.speed = 290;
         this.cooldown = 0;
-        this.invulnTimer = 0; // Breve proteção ao tomar dano
+        this.specialCooldown = 0;
+        this.invulnTimer = 0;
     }
 
     update(dt) {
@@ -55,37 +95,49 @@ class Player {
         if (right) this.x += this.speed * dt;
 
         this.x = Math.max(8, Math.min(canvas.width - this.w - 8, this.x));
+
         this.cooldown = Math.max(0, this.cooldown - dt);
+        this.specialCooldown = Math.max(0, this.specialCooldown - dt);
         if (this.invulnTimer > 0) this.invulnTimer -= dt;
 
         if ((KEYS[" "] || KEYS["arrowup"] || KEYS["w"]) && this.cooldown === 0) {
-            bullets.push(new Bullet(this.x + this.w / 2 - 2, this.y - 8));
-            this.cooldown = 0.22;
+            bullets.push(new Bullet(this.x + this.w / 2 - 2, this.y - 8, false));
+            this.cooldown = NORMAL_COOLDOWN;
+        }
+
+        if (KEYS["x"] && this.specialCooldown === 0) {
+            bullets.push(new Bullet(this.x + this.w / 2 - 6, this.y - 14, true));
+            this.specialCooldown = SPECIAL_COOLDOWN;
         }
     }
 
     draw() {
-        // Pisca se estiver invulnerável após tomar dano
         if (this.invulnTimer > 0 && Math.floor(this.invulnTimer * 15) % 2 === 0) {
             return;
         }
-        ctx.fillStyle = "#38bdf8";
-        ctx.beginPath();
-        ctx.moveTo(this.x + this.w / 2, this.y);
-        ctx.lineTo(this.x + this.w, this.y + this.h);
-        ctx.lineTo(this.x, this.y + this.h);
-        ctx.closePath();
-        ctx.fill();
+
+        const drewSprite = drawSpriteCentered(SPRITES.player, this.x, this.y, this.w, this.h);
+        if (!drewSprite) {
+            ctx.fillStyle = "#38bdf8";
+            ctx.beginPath();
+            ctx.moveTo(this.x + this.w / 2, this.y);
+            ctx.lineTo(this.x + this.w, this.y + this.h);
+            ctx.lineTo(this.x, this.y + this.h);
+            ctx.closePath();
+            ctx.fill();
+        }
     }
 }
 
 class Bullet {
-    constructor(x, y) {
+    constructor(x, y, isSpecial = false) {
         this.x = x;
         this.y = y;
-        this.h = 10;
-        this.w = 4;
-        this.speed = 450;
+        this.isSpecial = isSpecial;
+        this.w = isSpecial ? 12 : 4;
+        this.h = isSpecial ? 18 : 10;
+        this.speed = isSpecial ? 520 : 450;
+        this.damage = isSpecial ? 4 : 1;
         this.dead = false;
     }
 
@@ -97,12 +149,11 @@ class Bullet {
     }
 
     draw() {
-        ctx.fillStyle = "#fde047";
+        ctx.fillStyle = this.isSpecial ? "#22d3ee" : "#fde047";
         ctx.fillRect(this.x, this.y, this.w, this.h);
     }
 }
 
-// Tiros exclusivos do Chefão da Onda 5
 class EnemyBullet {
     constructor(x, y) {
         this.x = x;
@@ -126,15 +177,50 @@ class EnemyBullet {
     }
 }
 
+class Particle {
+    constructor(x, y, color) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 50 + Math.random() * 140;
+        this.x = x;
+        this.y = y;
+        this.vx = Math.cos(angle) * speed;
+        this.vy = Math.sin(angle) * speed;
+        this.life = 0.35 + Math.random() * 0.25;
+        this.maxLife = this.life;
+        this.size = 2 + Math.random() * 3;
+        this.color = color;
+    }
+
+    update(dt) {
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+        this.life -= dt;
+    }
+
+    draw() {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, this.life / this.maxLife);
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, this.size, this.size);
+        ctx.restore();
+    }
+}
+
+function spawnExplosion(x, y, color, isBoss = false) {
+    const count = isBoss ? 35 : 8 + Math.floor(Math.random() * 5);
+    for (let i = 0; i < count; i++) {
+        particles.push(new Particle(x, y, color));
+    }
+}
+
 class Enemy {
     constructor(x, y, type) {
         this.type = type;
         this.x = x;
         this.y = y;
         this.dead = false;
-        this.hitFlash = 0; // Temporizador para piscar branco ao levar tiro
+        this.hitFlash = 0;
 
-        // Configurações balanceadas por tipo
         const baseSpeed = 75;
 
         if (type === "basic") {
@@ -149,7 +235,7 @@ class Enemy {
             this.w = 36;
             this.h = 36;
             this.maxHp = 4;
-            this.speed = baseSpeed * 0.5; // Metade da velocidade do básico
+            this.speed = baseSpeed * 0.5;
             this.color = "#f97316";
             this.detailColor = "#7c2d12";
             this.points = 35;
@@ -157,7 +243,7 @@ class Enemy {
             this.w = 46;
             this.h = 46;
             this.maxHp = 9;
-            this.speed = baseSpeed * 0.38; // Um pouco menos que o médio
+            this.speed = baseSpeed * 0.38;
             this.color = "#a855f7";
             this.detailColor = "#4c1d95";
             this.points = 80;
@@ -165,8 +251,8 @@ class Enemy {
             this.w = 110;
             this.h = 65;
             this.maxHp = 45;
-            this.speed = 18; // Desce bem devagar para dar tempo de lutar
-            this.vx = 95; // Velocidade lateral
+            this.speed = 18;
+            this.vx = 95;
             this.shootTimer = 1.5;
             this.color = "#e11d48";
             this.detailColor = "#facc15";
@@ -176,12 +262,18 @@ class Enemy {
         this.hp = this.maxHp;
     }
 
-    takeDamage() {
-        this.hp -= 1;
-        this.hitFlash = 0.08; // Pisca branco por 80ms
-        if (this.hp <= 0) {
+    takeDamage(amount = 1) {
+        this.hp -= amount;
+        this.hitFlash = 0.08;
+        if (this.hp <= 0 && !this.dead) {
             this.dead = true;
             score += this.points;
+            spawnExplosion(
+                this.x + this.w / 2,
+                this.y + this.h / 2,
+                this.color,
+                this.type === "boss"
+            );
         }
     }
 
@@ -192,9 +284,7 @@ class Enemy {
 
         this.y += this.speed * dt;
 
-        // Comportamento especial do Chefão
         if (this.type === "boss") {
-            // Para de descer quando chega na altura y = 110 e fica patrulhando
             if (this.y > 110) {
                 this.y = 110;
             }
@@ -203,7 +293,6 @@ class Enemy {
                 this.vx *= -1;
             }
 
-            // Chefão atira periodicamente
             this.shootTimer -= dt;
             if (this.shootTimer <= 0) {
                 enemyBullets.push(new EnemyBullet(this.x + 20, this.y + this.h));
@@ -212,7 +301,6 @@ class Enemy {
             }
         }
 
-        // Perde vida se passar do fim da tela
         if (this.y > canvas.height && !this.dead) {
             this.dead = true;
             loseLife();
@@ -220,26 +308,35 @@ class Enemy {
     }
 
     draw() {
-        // Corpo do inimigo (branco se acabou de levar dano)
-        ctx.fillStyle = this.hitFlash > 0 ? "#ffffff" : this.color;
-        ctx.fillRect(this.x, this.y, this.w, this.h);
+        const sprite = SPRITES[this.type];
+        const drewSprite = drawSpriteCentered(
+            sprite,
+            this.x,
+            this.y,
+            this.w,
+            this.h,
+            this.hitFlash > 0
+        );
 
-        // Detalhe visual interno proporcional ao tamanho
-        ctx.fillStyle = this.hitFlash > 0 ? "#e2e8f0" : this.detailColor;
-        const pad = Math.floor(this.w * 0.2);
-        ctx.fillRect(this.x + pad, this.y + pad, this.w - pad * 2, Math.floor(this.h * 0.3));
+        // Fallback: desenha o bloquinho caso o PNG ainda não exista na pasta Mídias
+        if (!drewSprite) {
+            ctx.fillStyle = this.hitFlash > 0 ? "#ffffff" : this.color;
+            ctx.fillRect(this.x, this.y, this.w, this.h);
 
-        // Barra de vida (para inimigos médios, difíceis e chefão)
+            ctx.fillStyle = this.hitFlash > 0 ? "#e2e8f0" : this.detailColor;
+            const pad = Math.floor(this.w * 0.2);
+            ctx.fillRect(this.x + pad, this.y + pad, this.w - pad * 2, Math.floor(this.h * 0.3));
+        }
+
+        // Barra de vida acima do inimigo/sprite
         if (this.maxHp > 2) {
             const barWidth = this.w;
             const barHeight = this.type === "boss" ? 8 : 5;
-            const barY = this.y - barHeight - 5;
+            const barY = this.y - barHeight - 6;
 
-            // Fundo da barra
-            ctx.fillStyle = "rgba(15, 23, 42, 0.8)";
+            ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
             ctx.fillRect(this.x, barY, barWidth, barHeight);
 
-            // Vida atual
             const hpRatio = Math.max(0, this.hp / this.maxHp);
             ctx.fillStyle = this.type === "boss" ? "#facc15" : "#4ade80";
             ctx.fillRect(this.x, barY, barWidth * hpRatio, barHeight);
@@ -255,116 +352,144 @@ function loseLife() {
     }
 }
 
-// Monta a fila de inimigos de cada uma das 5 ondas
 function buildWaveQueue(waveNum) {
     let list = [];
 
     if (waveNum === 1) {
-        // Onda 1: Apenas básicos
         list = Array(8).fill("basic");
     } else if (waveNum === 2) {
-        // Onda 2: Maioria básicos + alguns médios
         list = [...Array(7).fill("basic"), ...Array(3).fill("medium")];
-    } else if (waveNum === 3) {
-        // Onda 3: Básicos, médios + introdução de 2 difíceis
-        list = [...Array(5).fill("basic"), ...Array(4).fill("medium"), ...Array(2).fill("hard")];
-    } else if (waveNum === 4) {
-        // Onda 4: Todos os tipos, maioria difíceis
-        list = [...Array(3).fill("basic"), ...Array(3).fill("medium"), ...Array(6).fill("hard")];
-    } else if (waveNum === 5) {
-        // Onda 5: Básicos primeiro e o Chefão por último!
-        const escorts = Array(6).fill("basic");
-        return [...escorts, "boss"];
-    }
-
-    // Embaralha os inimigos para não virem sempre na mesma ordem
-    for (let i = list.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [list[i], list[j]] = [list[j], list[i]];
-    }
-    return list;
+} else if (waveNum === 3) {
+list = [...Array(5).fill("basic"), ...Array(4).fill("medium"), ...Array(2).fill("hard")];
+} else if (waveNum === 4) {
+list = [...Array(3).fill("basic"), ...Array(3).fill("medium"), ...Array(6).fill("hard")];
+} else if (waveNum === 5) {
+const escorts = Array(6).fill("basic");
+return [...escorts, "boss"];
 }
-
+for (let i = list.length - 1; i > 0; i--) {
+const j = Math.floor(Math.random() * (i + 1));
+[list[i], list[j]] = [list[j], list[i]];
+}
+return list;
+}
+// Inicializa estrelas com velocidades diferentes (efeito Parallax)
+function createStars() {
+const list = [];
+for (let i = 0; i < 55; i++) {
+const size = 1 + Math.random() * 2.2;
+list.push({
+x: Math.random() * canvas.width,
+y: Math.random() * canvas.height,
+size: size,
+speed: 25 + size * 35,
+alpha: 0.35 + (size / 3.2) * 0.65
+});
+}
+return list;
+}
+function updateStars(dt) {
+stars.forEach((s) => {
+s.y += s.speed * dt;
+if (s.y > canvas.height) {
+s.y = -s.size;
+s.x = Math.random() * canvas.width;
+}
+});
+}
+function drawStars() {
+stars.forEach((s) => {
+ctx.save();
+ctx.globalAlpha = s.alpha;
+ctx.fillStyle = "#bae6fd";
+ctx.fillRect(s.x, s.y, s.size, s.size);
+ctx.restore();
+});
+}
 function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Estrelas de fundo
-    ctx.fillStyle = "#7dd3fc";
-    for (let i = 0; i < 40; i++) {
-        ctx.fillRect((i * 97) % canvas.width, (i * 53) % canvas.height, 2, 2);
-    }
-
-    player.draw();
-    enemies.forEach((e) => e.draw());
-    bullets.forEach((b) => b.draw());
-    enemyBullets.forEach((eb) => eb.draw());
-
-    // Aviso de transição de onda
-    if (waveBannerTimer > 0 && !pause && !gameOver && !victory) {
-        ctx.fillStyle = "#38bdf8";
-        ctx.textAlign = "center";
-        ctx.font = "bold 28px Segoe UI";
-        const title = waves === 5 ? "ONDA 5 - CHEFÃO FINAL!" : `ONDA ${waves}`;
-        ctx.fillText(title, canvas.width / 2, canvas.height / 2 - 40);
-    }
-
-    if (pause) {
-        drawOverlay("PAUSA", "Pressione P para continuar");
-    }
-    if (gameOver) {
-        drawOverlay("GAME OVER", `Pontuação: ${score} | Pressione R para reiniciar`);
-    }
-    if (victory) {
-        drawOverlay("VITÓRIA!", `Você venceu todas as ondas! Pontos: ${score} | Pressione R`);
-    }
+ctx.clearRect(0, 0, canvas.width, canvas.height);
+// Fundo estrelado em movimento
+drawStars();
+player.draw();
+enemies.forEach((e) => e.draw());
+bullets.forEach((b) => b.draw());
+enemyBullets.forEach((eb) => eb.draw());
+particles.forEach((p) => p.draw());
+// Indicador do Especial [X] corrigido
+ctx.font = "12px Segoe UI";
+ctx.textAlign = "left";
+if (player.specialCooldown === 0) {
+ctx.fillStyle = "#22d3ee";
+ctx.fillText("Especial [X]: PRONTO", 12, canvas.height - 12);
+} else {
+ctx.fillStyle = "#94a3b8";
+ctx.fillText("Especial [X]: " + player.specialCooldown.toFixed(1) + "s", 12, canvas.height - 12);
 }
-
-let player, bullets, enemyBullets, enemies, score, lives, waves, last;
+// Banner da onda corrigido
+if (waveBannerTimer > 0 && !pause && !gameOver && !victory) {
+ctx.fillStyle = "#38bdf8";
+ctx.textAlign = "center";
+ctx.font = "bold 28px Segoe UI";
+const title = waves === 5 ? "ONDA 5 - CHEFÃO FINAL!" : "ONDA " + waves;
+ctx.fillText(title, canvas.width / 2, canvas.height / 2 - 40);
+}
+// Telas de overlay corrigidas
+if (pause) {
+drawOverlay("PAUSA", "Pressione P para continuar");
+}
+if (gameOver) {
+drawOverlay("GAME OVER", "Pontuação: " + score + " | Pressione R para reiniciar");
+}
+if (victory) {
+drawOverlay("VITÓRIA!", "Você venceu todas as ondas! Pontos: " + score + " | Pressione R");
+}
+}
+let player, bullets, enemyBullets, enemies, particles, stars, score, lives, waves, last;
 let gameOver, victory, pause, spawnTimer, waveQueue, waveBannerTimer;
-
 function startGame() {
-    player = new Player();
-    bullets = [];
-    enemyBullets = [];
-    enemies = [];
-    score = 0;
-    lives = 3;
-    waves = 1;
-    waveQueue = buildWaveQueue(1);
-    spawnTimer = 1.0;
-    waveBannerTimer = 2.0;
-    pause = false;
-    gameOver = false;
-    victory = false;
-    last = 0;
-    syncHud();
+player = new Player();
+bullets = [];
+enemyBullets = [];
+enemies = [];
+particles = [];
+stars = createStars();
+score = 0;
+lives = 3;
+waves = 1;
+waveQueue = buildWaveQueue(1);
+spawnTimer = 1.0;
+waveBannerTimer = 2.0;
+pause = false;
+gameOver = false;
+victory = false;
+last = 0;
+syncHud();
 }
-
 function update(dt) {
-    if (pause || gameOver || victory) return;
-
+if (pause || gameOver || victory) return;
 if (waveBannerTimer > 0) {
 waveBannerTimer -= dt;
 }
+updateStars(dt);
 player.update(dt);
 bullets.forEach((b) => b.update(dt));
 enemyBullets.forEach((eb) => eb.update(dt));
 enemies.forEach((e) => e.update(dt));
-spawnFromQueue(dt);
-// Colisão: Tiros do jogador x Inimigos
+particles.forEach((p) => p.update(dt));
+spawnWave(dt);
 bullets.forEach((b) => {
 enemies.forEach((e) => {
 if (!b.dead && !e.dead && aabb(b, e)) {
 b.dead = true;
-e.takeDamage();
+e.takeDamage(b.damage);
 }
 });
 });
-// Colisão: Inimigos x Jogador
 enemies.forEach((e) => {
 if (!e.dead && aabb(e, player)) {
 if (e.type !== "boss") {
 e.dead = true;
+spawnExplosion(e.x + e.w / 2, e.y + e.h / 2, e.color);
 }
 if (player.invulnTimer <= 0) {
 loseLife();
@@ -372,7 +497,6 @@ player.invulnTimer = 1.2;
 }
 }
 });
-// Colisão: Tiros do Chefão x Jogador
 enemyBullets.forEach((eb) => {
 if (!eb.dead && aabb(eb, player)) {
 eb.dead = true;
@@ -385,13 +509,13 @@ player.invulnTimer = 1.2;
 enemies = enemies.filter((e) => !e.dead);
 bullets = bullets.filter((b) => !b.dead);
 enemyBullets = enemyBullets.filter((eb) => !eb.dead);
-// Verifica se a onda atual terminou (fila vazia e nenhum inimigo vivo)
+particles = particles.filter((p) => p.life > 0);
 if (waveQueue.length === 0 && enemies.length === 0 && !gameOver) {
 if (waves < 5) {
 waves += 1;
 waveQueue = buildWaveQueue(waves);
 waveBannerTimer = 2.2;
-spawnTimer = 1.5; // Pequena pausa antes da próxima onda começar
+spawnTimer = 1.5;
 } else {
 victory = true;
 }
@@ -401,14 +525,46 @@ syncHud();
 function syncHud() {
 scoreE1.textContent = score;
 livesE1.textContent = lives;
-wavesE1.textContent = ${waves}/5;
+wavesE1.textContent = waves + "/5";
 }
-function spawnFromQueue(dt) {
+/**
+• TUNE DA ONDA (Balanceamento em 3 eixos):
+• 
+	1. QUANTIDADE (por onda):
+• 
+	• Onda 1: 8 inimigos (8 básicos)
+• 
+	• Onda 2: 10 inimigos (7 básicos, 3 médios)
+• 
+	• Onda 3: 11 inimigos (5 básicos, 4 médios, 2 difíceis)
+• 
+	• Onda 4: 12 inimigos (3 básicos, 3 médios, 6 difíceis)
+• 
+	• Onda 5: 7 inimigos (6 básicos de escolta + 1 Chefão Final)
+• 
+	2. VELOCIDADE (inversamente proporcional à vida):
+• 
+	• Básico (2 HP): 75 px/s
+• 
+	• Médio (4 HP): 37.5 px/s (0.5x do básico)
+• 
+	• Difícil (9 HP): 28.5 px/s (0.38x do básico)
+• 
+	• Chefão (45 HP): 18 px/s descendo até y=110 e 95 px/s lateralmente
+• 
+	3. INTERVALO DE SPAWN (cadência de entrada):
+• 
+	• Após Básico: 1.25s
+• 
+	• Após Médio: 1.70s
+• 
+	• Após Difícil: 2.20s
+*/
+function spawnWave(dt) {
 if (waveQueue.length === 0) return;
 spawnTimer -= dt;
 if (spawnTimer <= 0) {
 const nextType = waveQueue.shift();
-// Se for o chefão, espera os básicos da onda 5 sumirem ou nasce centralizado
 if (nextType === "boss") {
 enemies.push(new Enemy(canvas.width / 2 - 55, -70, "boss"));
 } else {
@@ -416,7 +572,6 @@ const margin = 55;
 const x = 15 + Math.random() * (canvas.width - margin - 15);
 enemies.push(new Enemy(x, -50, nextType));
 }
-// Intervalo dinâmico: ondas mais lentas e cadenciadas
 if (nextType === "hard") {
 spawnTimer = 2.2;
 } else if (nextType === "medium") {
